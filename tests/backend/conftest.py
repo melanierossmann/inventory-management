@@ -12,6 +12,20 @@ server_path = Path(__file__).parent.parent.parent / "server"
 sys.path.insert(0, str(server_path))
 
 from main import app
+from mock_data import restock_orders
+
+
+@pytest.fixture(autouse=True)
+def reset_restock_orders():
+    """Clear submitted restocking orders around each test.
+
+    The app's data lives in module-level lists that are never reloaded between
+    tests, so POSTed orders would otherwise leak into later tests. Clear in place
+    (never rebind) because main.py holds a reference to this same list object.
+    """
+    restock_orders.clear()
+    yield
+    restock_orders.clear()
 
 
 @pytest.fixture

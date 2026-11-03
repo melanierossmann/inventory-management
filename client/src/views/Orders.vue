@@ -74,6 +74,56 @@
           </table>
         </div>
       </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title">{{ t('orders.submitted.title') }} ({{ restockOrders.length }})</h3>
+        </div>
+        <div v-if="restockError" class="error">{{ restockError }}</div>
+        <div v-else-if="restockOrders.length === 0" class="empty-state">
+          {{ t('orders.submitted.empty') }}
+        </div>
+        <div v-else class="table-container">
+          <table class="orders-table">
+            <thead>
+              <tr>
+                <th class="col-order-number">{{ t('orders.submitted.table.orderNumber') }}</th>
+                <th class="col-date">{{ t('orders.submitted.table.submittedDate') }}</th>
+                <th class="col-items">{{ t('orders.submitted.table.items') }}</th>
+                <th class="col-value">{{ t('orders.submitted.table.totalCost') }}</th>
+                <th class="col-status">{{ t('orders.submitted.table.status') }}</th>
+                <th class="col-date">{{ t('orders.submitted.table.leadTime') }}</th>
+                <th class="col-date">{{ t('orders.submitted.table.expectedDelivery') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="order in restockOrders" :key="order.order_number">
+                <td class="col-order-number"><strong>{{ order.order_number }}</strong></td>
+                <td class="col-date">{{ formatDate(order.submitted_date) }}</td>
+                <td class="col-items">
+                  <details class="items-details">
+                    <summary class="items-summary">
+                      {{ t('orders.itemsCount', { count: order.lines.length }) }}
+                    </summary>
+                    <div class="items-dropdown">
+                      <div v-for="line in order.lines" :key="line.sku" class="item-entry">
+                        <span class="item-name">{{ line.sku }} - {{ translateProductName(line.name) }}</span>
+                        <span class="item-meta">{{ t('orders.quantity') }}: {{ line.quantity }}</span>
+                      </div>
+                    </div>
+                  </details>
+                </td>
+                <td class="col-value"><strong>{{ formatCurrency(order.total_cost, currentCurrency) }}</strong></td>
+                <td class="col-status">
+                  <span class="badge info">{{ t('orders.submitted.statusSubmitted') }}</span>
+                </td>
+                <td class="col-date">{{ t('orders.submitted.days', { count: order.lead_time_days }) }}</td>
+                <td class="col-date">{{ formatDate(order.expected_delivery) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -83,6 +133,7 @@ import { ref, onMounted, watch, computed } from 'vue'
 import { api } from '../api'
 import { useFilters } from '../composables/useFilters'
 import { useI18n } from '../composables/useI18n'
+import { formatCurrency } from '../utils/currency'
 
 export default {
   name: 'Orders',
@@ -95,6 +146,8 @@ export default {
     const loading = ref(true)
     const error = ref(null)
     const orders = ref([])
+    const restockOrders = ref([])
+    const restockError = ref(null)
 
     // Use shared filters
     const {
@@ -121,6 +174,17 @@ export default {
         error.value = 'Failed to load orders: ' + err.message
       } finally {
         loading.value = false
+      }
+    }
+
+    // Restock orders ignore the global order filters and fail independently,
+    // so an error here never blanks the main orders table
+    const loadRestockOrders = async () => {
+      try {
+        restockError.value = null
+        restockOrders.value = await api.getRestockOrders()
+      } catch (err) {
+        restockError.value = t('orders.submitted.loadError') + ': ' + err.message
       }
     }
 
@@ -153,10 +217,17 @@ export default {
       })
     }
 
-    onMounted(loadOrders)
+    onMounted(() => {
+      loadOrders()
+      loadRestockOrders()
+    })
 
     return {
       t,
+      restockOrders,
+      restockError,
+      formatCurrency,
+      currentCurrency,
       loading,
       error,
       orders,
@@ -275,5 +346,12 @@ export default {
 .item-meta {
   font-size: 0.813rem;
   color: #64748b;
+}
+
+.empty-state {
+  padding: 2rem;
+  text-align: center;
+  color: #64748b;
+  font-size: 0.938rem;
 }
 </style>

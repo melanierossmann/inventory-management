@@ -1,8 +1,9 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from datetime import datetime, timedelta
 from typing import List, Optional
 from pydantic import BaseModel
-from mock_data import inventory_items, orders, demand_forecasts, backlog_items, spending_summary, monthly_spending, category_spending, recent_transactions, purchase_orders
+from mock_data import inventory_items, orders, demand_forecasts, backlog_items, spending_summary, monthly_spending, category_spending, recent_transactions, purchase_orders, restock_orders
 
 app = FastAPI(title="Factory Inventory Management System")
 
@@ -119,6 +120,56 @@ class CreatePurchaseOrderRequest(BaseModel):
     unit_cost: float
     expected_delivery_date: str
     notes: Optional[str] = None
+
+class RestockLineRequest(BaseModel):
+    sku: str
+    quantity: int
+
+class CreateRestockOrderRequest(BaseModel):
+    budget: float
+    lines: List[RestockLineRequest]
+
+class RestockLine(BaseModel):
+    sku: str
+    name: str
+    category: str
+    warehouse: str
+    quantity: int
+    unit_cost: float
+    line_cost: float
+    lead_time_days: int
+
+class RestockOrder(BaseModel):
+    id: str
+    order_number: str
+    lines: List[RestockLine]
+    total_cost: float
+    budget: float
+    status: str
+    submitted_date: str
+    lead_time_days: int
+    expected_delivery: str
+
+# Demo supplier lead times in days. Base time per category, plus an offset for
+# warehouses farther from the supplier base. Unknown values fall back to defaults.
+CATEGORY_LEAD_TIME_DAYS = {
+    'actuators': 14,
+    'circuit boards': 10,
+    'controllers': 12,
+    'power supplies': 9,
+    'sensors': 7,
+}
+DEFAULT_LEAD_TIME_DAYS = 14
+WAREHOUSE_LEAD_TIME_OFFSET_DAYS = {
+    'San Francisco': 0,
+    'London': 2,
+    'Tokyo': 4,
+}
+
+def get_lead_time_days(category: str, warehouse: str) -> int:
+    """Derive delivery lead time (days) for an item from its category and warehouse"""
+    base = CATEGORY_LEAD_TIME_DAYS.get(category.lower(), DEFAULT_LEAD_TIME_DAYS)
+    return base + WAREHOUSE_LEAD_TIME_OFFSET_DAYS.get(warehouse, 0)
 
 # API endpoints
 @app.get("/")
@@ -303,6 +354,62 @@ def get_monthly_trends():
     result = list(months.values())
     result.sort(key=lambda x: x['month'])
     return result
+
+@app.get("/api/restocking-orders", response_model=List[RestockOrder])
+def get_restock_orders():
+    """Get submitted restocking orders, newest first"""
+    # Orders are appended chronologically, so reversing yields newest first
+    return list(reversed(restock_orders))
+
+@app.post("/api/restocking-orders", response_model=RestockOrder, status_code=201)
+def create_restock_order(request: CreateRestockOrderRequest):
+    """Submit a restocking order. Costs come from inventory, never from the client."""
+    if not request.lines:
+        raise HTTPException(status_code=400, detail="Order must contain at least one line")
+    if request.budget < 0:
+        raise HTTPException(status_code=400, detail="Budget cannot be negative")
+
+    inventory_by_sku = {item["sku"]: item for item in inventory_items}
+    lines = []
+    for line in request.lines:
+        if line.quantity <= 0:
+            raise HTTPException(status_code=400, detail=f"Invalid quantity for {line.sku}")
+        item = inventory_by_sku.get(line.sku)
+        if not item:
+            raise HTTPException(status_code=400, detail=f"Unknown SKU {line.sku}")
+        lines.append({
+            "sku": item["sku"],
+            "name": item["name"],
+            "category": item["category"],
+            "warehouse": item["warehouse"],
+            "quantity": line.quantity,
+            "unit_cost": item["unit_cost"],
+            "line_cost": round(line.quantity * item["unit_cost"], 2),
+            "lead_time_days": get_lead_time_days(item["category"], item["warehouse"]),
+        })
+
+    total_cost = round(sum(line["line_cost"] for line in lines), 2)
+    # Small tolerance so a total that equals the budget is not rejected by float rounding
+    if total_cost > request.budget + 0.005:
+        raise HTTPException(status_code=400, detail="Order total exceeds budget")
+
+    # The order arrives when its slowest line does, so it takes the longest line's lead time
+    lead_time_days = max(line["lead_time_days"] for line in lines)
+    now = datetime.now()
+    order = {
+        "id": str(len(restock_orders) + 1),
+        "order_number": f"RST-{now.year}-{len(restock_orders) + 1:04d}",
+        "lines": lines,
+        "total_cost": total_cost,
+        "budget": request.budget,
+        "status": "Submitted",
+        "submitted_date": now.isoformat(timespec="seconds"),
+        "lead_time_days": lead_time_days,
+        "expected_delivery": (now + timedelta(days=lead_time_days)).isoformat(timespec="seconds"),
+    }
+    # Append in place: main.py holds a reference to the list imported from mock_data
+    restock_orders.append(order)
+    return order
 
 if __name__ == "__main__":
     import uvicorn
